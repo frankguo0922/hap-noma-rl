@@ -1,0 +1,41 @@
+diff --git a/configs/default_paper_scale.yaml b/configs/default_paper_scale.yaml
+index 7f17449..0dfe27e 100644
+--- a/configs/default_paper_scale.yaml
++++ b/configs/default_paper_scale.yaml
+@@ -26,7 +26,7 @@ env:
+   inter_beam_scale: 0.1
+   sic_threshold: 1.2
+   residual_factor: 0.05
+-  sinr_cap: 100.0
++  sinr_cap: 20.0
+   noise_floor: 0.0
+
+   reward_scale: 1.0
+@@ -42,14 +42,14 @@ env:
+     enabled: true
+     solver_enabled: true
+     total_steps: 50000
+-    solver_k_start: 6
++    solver_k_start: 4
+     solver_k_end: 10
+-    solver_m_start: 20
++    solver_m_start: 10
+     solver_m_end: 60
+-    tau0_candidates_start: 4
++    tau0_candidates_start: 3
+     tau0_candidates_end: 10
+-    random_combo_prob_start: 0.5
+-    random_combo_prob_end: 0.0
++    random_combo_prob_start: 0.8
++    random_combo_prob_end: 0.2
+
+   solver_k: 10
+   solver_m: 60
+@@ -64,7 +64,7 @@ env:
+     pathloss_exp: 2.2
+     beta0: 0.001
+     d0: 1.0
+-    gain_scale: 10.0
++    gain_scale: 3.0
+     ar_coef: 0.0
+     aoa_jitter_std: 0.0
