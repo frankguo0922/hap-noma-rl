@@ -1,0 +1,87 @@
+seed: 42
+env:
+  n_wd: 200
+  max_wd: 200
+  p_join: 0.05
+  p_leave: 0.05
+  init_active_prob: 0.5
+
+  p_wet: 5.0
+  eta: 0.6
+  p_max: 0.18
+  p_c: 0.05
+  e_max: 5.0
+  power_action_scale: 1.0
+
+  tau_min: 0.1
+  tau_max: 0.9
+
+  noise_power: 0.001
+  noise_mode: thermal
+  bandwidth: 1.0
+  B_Hz: 1000000.0
+  N0_dBm_perHz: -174.0
+  noise_figure_dB: 7.0
+  inter_beam_k: 2.0
+  inter_beam_scale: 0.1
+  sic_threshold: 1.2
+  residual_factor: 0.05
+  sinr_cap: 100.0
+  noise_floor: 0.0
+
+  reward_scale: 1.0
+  mu_energy: 0.5
+  mu_infeasible: 0.0
+  reward_nu: 0.0
+
+  reward_ref_ee: 20.0
+  reward_norm_mode: ratio
+  reward_baseline: 0.0
+
+  curriculum:
+    enabled: true
+    solver_enabled: true
+    total_steps: 50000
+    solver_k_start: 6
+    solver_k_end: 10
+    solver_m_start: 20
+    solver_m_end: 60
+    tau0_candidates_start: 4
+    tau0_candidates_end: 10
+    random_combo_prob_start: 0.5
+    random_combo_prob_end: 0.0
+
+  solver_k: 10
+  solver_m: 60
+  tau0_candidates: 10
+
+  include_distance: true
+  max_steps: 200
+
+  channel:
+    d_min: 30.0
+    d_max: 200.0
+    pathloss_exp: 2.2
+    beta0: 0.001
+    d0: 1.0
+    gain_scale: 10.0
+    ar_coef: 0.0
+    aoa_jitter_std: 0.0
+train:
+  total_timesteps: 300000
+  n_envs: 8
+  log_interval: 1000
+  eval_freq: 20000
+  ent_coef: auto_0.3
+  learning_starts: 2000
+  learning_rate: 0.0003
+  gamma: 0.99
+  batch_size: 256
+  buffer_size: 100000
+  train_freq: 1
+  gradient_steps: 1
+  sac_tau: 0.005
+  ppo_n_steps: 256
+  ppo_batch_size: 256
+eval:
+  n_eval_episodes: 30
