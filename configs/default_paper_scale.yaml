@@ -6,7 +6,7 @@ env:
   p_leave: 0.05
   init_active_prob: 0.5
 
-  p_wet: 2.0
+  p_wet: 5.0
   eta: 0.6
   p_max: 0.18
   p_c: 0.05
