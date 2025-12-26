@@ -33,6 +33,7 @@ class EnvConfig:
 
     tau_min: float = 0.1
     tau_max: float = 0.9
+    tau0_mode: str = "grid"
 
     noise_power: float = 1e-3
     noise_mode: str = "fixed"
@@ -109,9 +110,12 @@ class HapWpcnNomaEnv(gym.Env):
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.max_wd, self.feat_dim), dtype=np.float32
         )
-        self.action_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(1 + self.max_wd + self.max_wd,), dtype=np.float32
-        )
+        action_dim = 1 + self.max_wd + self.max_wd
+        low = np.full(action_dim, -1.0, dtype=np.float32)
+        high = np.full(action_dim, 1.0, dtype=np.float32)
+        low[0] = 0.0
+        high[0] = 1.0
+        self.action_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
     def _reset_state(self) -> None:
         self.active = np.zeros(self.max_wd, dtype=bool)
@@ -177,9 +181,10 @@ class HapWpcnNomaEnv(gym.Env):
         self.step_count += 1
 
         action = np.asarray(action, dtype=np.float32).flatten()
-        a_tau = action[0]
+        a_tau = float(np.clip(action[0], 0.0, 1.0))
         a_beam = action[1 : 1 + self.max_wd]
         a_tail = action[1 + self.max_wd : 1 + 2 * self.max_wd]
+        tau0_agent = self.cfg.tau_min + a_tau * (self.cfg.tau_max - self.cfg.tau_min)
 
         a_sel = a_tail[: self.max_wd - 2]
         a_r1 = a_tail[self.max_wd - 2]
@@ -285,9 +290,12 @@ class HapWpcnNomaEnv(gym.Env):
                 combos = list(dict.fromkeys(combos))
                 sampled = len(combos)
 
-            tau0_candidates = np.linspace(
-                self.cfg.tau_min, self.cfg.tau_max, int(max(2, tau0_count_eff))
-            )
+            if self.cfg.tau0_mode == "agent":
+                tau0_candidates = np.array([tau0_agent], dtype=np.float32)
+            else:
+                tau0_candidates = np.linspace(
+                    self.cfg.tau_min, self.cfg.tau_max, int(max(2, tau0_count_eff))
+                )
             battery_before = self.energy.copy()
 
             for combo in combos:
@@ -374,9 +382,12 @@ class HapWpcnNomaEnv(gym.Env):
                     beam[drop_idx] = 0
             beam[~self.active] = 0
 
-            tau0 = float(self.cfg.tau0_baseline) if self.cfg.tau0_baseline is not None else map_action_to_tau0(
-                a_tau, self.cfg.tau_min, self.cfg.tau_max
-            )
+            if self.cfg.tau0_mode == "agent":
+                tau0 = tau0_agent
+            else:
+                tau0 = float(self.cfg.tau0_baseline) if self.cfg.tau0_baseline is not None else map_action_to_tau0(
+                    a_tau, self.cfg.tau_min, self.cfg.tau_max
+                )
             tau1 = 1.0 - tau0
             battery_before = self.energy.copy()
             harvested = harvest_energy(effective_gain, self.active, tau0, self.cfg.p_wet, self.cfg.eta)
@@ -407,7 +418,9 @@ class HapWpcnNomaEnv(gym.Env):
         if candidates.size == 0:
             beam = np.zeros(self.max_wd, dtype=np.int64)
             power = np.zeros(self.max_wd, dtype=np.float32)
-            tau0 = map_action_to_tau0(a_tau, self.cfg.tau_min, self.cfg.tau_max)
+            tau0 = tau0_agent if self.cfg.tau0_mode == "agent" else map_action_to_tau0(
+                a_tau, self.cfg.tau_min, self.cfg.tau_max
+            )
             tau1 = 1.0 - tau0
 
         if np.all(beam == 0):
