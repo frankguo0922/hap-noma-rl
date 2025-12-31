@@ -1,6 +1,7 @@
 """Evaluate EE vs number of WDs using a trained SAC policy."""
 from __future__ import annotations
 
+import argparse
 import csv
 import os
 from typing import Dict, List
@@ -16,6 +17,20 @@ from envs.hap_wpcn_noma_env import HapWpcnNomaEnv, build_env_config
 def load_config(path: str) -> Dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def style_axes(dpi: int) -> None:
+    plt.rcParams.update(
+        {
+            "font.size": 11,
+            "axes.titlesize": 12,
+            "axes.labelsize": 11,
+            "legend.fontsize": 9,
+            "xtick.labelsize": 10,
+            "ytick.labelsize": 10,
+            "figure.dpi": dpi,
+        }
+    )
 
 
 def run_eval(env: HapWpcnNomaEnv, model: SAC, episodes: int, seed: int) -> Dict[str, float]:
@@ -60,6 +75,12 @@ def run_eval(env: HapWpcnNomaEnv, model: SAC, episodes: int, seed: int) -> Dict[
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--out_path", type=str, default=None)
+    parser.add_argument("--dpi", type=int, default=300)
+    parser.add_argument("--show", action="store_true")
+    args = parser.parse_args()
+
     cfg = load_config("configs/default_paper_scale.yaml")
     env_cfg = build_env_config(cfg.get("env", {}))
 
@@ -124,18 +145,26 @@ def main() -> int:
         writer.writeheader()
         writer.writerows(rows)
 
-    os.makedirs("figures", exist_ok=True)
+    style_axes(args.dpi)
     plt.figure(figsize=(8, 5))
     plt.plot(wd_list, ee_mean_list, marker="o", linewidth=2)
+    ymin = float(np.min(ee_mean_list)) - 0.5
+    ymax = float(np.max(ee_mean_list)) + 0.5
+    ax = plt.gca()
+    ax.set_ylim(ymin, ymax)
+    ax.set_autoscaley_on(False)
     plt.title("System Energy Efficiency vs Number of WDs (1 HAP, 2-Antenna, SAC)")
     plt.xlabel("Number of WDs")
     plt.ylabel("System Energy Efficiency (bps/Hz/J)")
     plt.xticks(wd_list)
     plt.grid(True, linestyle="--", alpha=0.6)
     plt.tight_layout()
-    out_path = os.path.join("figures", "ee_vs_wd.png")
-    plt.savefig(out_path, dpi=200)
-    plt.show()
+    out_path = args.out_path or os.path.join("figures", "ee_vs_wd.png")
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    plt.savefig(out_path, dpi=args.dpi)
+    if args.show:
+        plt.show()
+    plt.close()
 
     print(f"Saved: {csv_path}")
     print(f"Saved: {out_path}")

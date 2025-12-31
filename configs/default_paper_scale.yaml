@@ -69,10 +69,10 @@ env:
     ar_coef: 0.0
     aoa_jitter_std: 0.0
 train:
-  total_timesteps: 300000
+  total_timesteps: 500000
   n_envs: 8
   log_interval: 1000
-  eval_freq: 20000
+  eval_freq: 40000
   ent_coef: auto_0.3
   learning_starts: 2000
   learning_rate: 0.0003

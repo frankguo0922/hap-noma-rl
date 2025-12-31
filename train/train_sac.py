@@ -26,6 +26,7 @@ class MetricsCallback(BaseCallback):
         eval_freq: int,
         log_path: str,
         metrics_path: str,
+        best_model_path: str,
         eval_env: HapWpcnNomaEnv,
         n_eval_episodes: int,
     ):
@@ -34,10 +35,12 @@ class MetricsCallback(BaseCallback):
         self.eval_freq = eval_freq
         self.log_path = log_path
         self.metrics_path = metrics_path
+        self.best_model_path = best_model_path
         self.eval_env = eval_env
         self.n_eval_episodes = n_eval_episodes
         self._last_log_step = 0
         self._metrics_header_written = False
+        self._best_eval = -np.inf
         self.rewards = deque(maxlen=log_interval)
         self.ee = deque(maxlen=log_interval)
         self.ee_sum = deque(maxlen=log_interval)
@@ -67,6 +70,8 @@ class MetricsCallback(BaseCallback):
         self.k_val = deque(maxlen=log_interval)
         self.m_val = deque(maxlen=log_interval)
         self._initial_eval_done = False
+        self._milestones_hit = set()
+        self._milestones = [240000, 300000, 400000, 500000]
 
     def _on_step(self) -> bool:
         infos: List[Dict] = self.locals.get("infos", [])
@@ -130,6 +135,11 @@ class MetricsCallback(BaseCallback):
                 self.k_val.append(info["K"])
             if "M" in info:
                 self.m_val.append(info["M"])
+
+        for milestone in self._milestones:
+            if self.num_timesteps >= milestone and milestone not in self._milestones_hit:
+                print(f"Reached milestone: step={milestone}")
+                self._milestones_hit.add(milestone)
 
         if self.n_calls % self.log_interval == 0 and self.n_calls > 0:
             avg_reward = float(np.mean(self.rewards)) if self.rewards else 0.0
@@ -317,6 +327,10 @@ class MetricsCallback(BaseCallback):
         with open(self.log_path, "a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow([self.num_timesteps, eval_mean, eval_std])
+        if eval_mean > self._best_eval:
+            os.makedirs(os.path.dirname(self.best_model_path), exist_ok=True)
+            self.model.save(self.best_model_path)
+            self._best_eval = eval_mean
         print(
             f"step={self.num_timesteps} eval_ee_sum_mean={eval_mean:.4f} "
             f"eval_ee_sum_std={eval_std:.4f}"
@@ -341,6 +355,10 @@ def main():
     parser.add_argument("--n-envs", type=int, default=None)
     args = parser.parse_args()
 
+    if args.config:
+        if not os.path.exists(args.config):
+            raise FileNotFoundError(f"Config not found: {args.config}")
+    print(f"USING_CONFIG={args.config}")
     cfg = load_config(args.config)
     env_cfg = build_env_config(cfg.get("env", {}))
     train_cfg = cfg.get("train", {})
@@ -360,6 +378,7 @@ def main():
     n_envs = args.n_envs or int(train_cfg.get("n_envs", 32))
     seed = int(cfg.get("seed", 42))
     env_cfg.total_timesteps = int(total_timesteps)
+    print(f"TOTAL_TIMESTEPS={total_timesteps}")
 
     vec_env = make_vec_env(lambda: HapWpcnNomaEnv(config=env_cfg, seed=seed), n_envs=n_envs)
 
@@ -386,6 +405,8 @@ def main():
     run_dir = os.path.join("logs", "runs", run_id)
     log_path = os.path.join(run_dir, "ee_vs_steps.csv")
     metrics_path = os.path.join(run_dir, "train_metrics.csv")
+    best_model_path = os.path.join(run_dir, "best_model")
+    print(f"TOTAL_TIMESTEPS={total_timesteps}, EVAL_FREQ={eval_freq}")
     print(f"Logging to: {log_path}")
     eval_env = HapWpcnNomaEnv(config=env_cfg, seed=seed + 999)
     print(f"train_cfg_hash={cfg_hash_value} eval_cfg_hash={cfg_hash_value}")
@@ -394,6 +415,7 @@ def main():
         eval_freq=eval_freq,
         log_path=log_path,
         metrics_path=metrics_path,
+        best_model_path=best_model_path,
         eval_env=eval_env,
         n_eval_episodes=n_eval_episodes,
     )
@@ -401,6 +423,8 @@ def main():
     model.learn(total_timesteps=total_timesteps, callback=callback)
 
     model.save("models/sac_hap_wpcn_noma")
+    os.makedirs("models/best", exist_ok=True)
+    model.save(os.path.join("models", "best", "best_model"))
     vec_env.close()
 
 

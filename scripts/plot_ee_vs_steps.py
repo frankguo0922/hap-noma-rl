@@ -1,8 +1,8 @@
 """Plot EE vs training steps from logged CSV."""
 from __future__ import annotations
 
+import argparse
 import os
-import sys
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -30,8 +30,31 @@ def find_latest_run_csv() -> str | None:
     return max(candidates, key=os.path.getmtime)
 
 
+def style_axes(dpi: int) -> None:
+    plt.rcParams.update(
+        {
+            "font.size": 11,
+            "axes.titlesize": 12,
+            "axes.labelsize": 11,
+            "legend.fontsize": 9,
+            "xtick.labelsize": 10,
+            "ytick.labelsize": 10,
+            "figure.dpi": dpi,
+        }
+    )
+
+
 def main() -> int:
-    csv_path = find_latest_run_csv()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--csv", type=str, default=None, help="Path to ee_vs_steps.csv")
+    parser.add_argument("--out_path", type=str, default=None)
+    parser.add_argument("--dpi", type=int, default=300)
+    parser.add_argument("--show", action="store_true")
+    args = parser.parse_args()
+
+    csv_path = args.csv
+    if csv_path is None:
+        csv_path = find_latest_run_csv()
     if csv_path is None:
         legacy_path = os.path.join("logs", "ee_vs_steps.csv")
         if os.path.exists(legacy_path):
@@ -39,6 +62,9 @@ def main() -> int:
         else:
             print("CSV not found: logs/runs/<run_id>/ee_vs_steps.csv")
             return 1
+    if not os.path.exists(csv_path):
+        print(f"CSV not found: {csv_path}")
+        return 1
 
     data = np.genfromtxt(csv_path, delimiter=",", skip_header=0)
     if data.size == 0:
@@ -76,17 +102,16 @@ def main() -> int:
     if ee_std is not None:
         ee_std = ee_std[unique_idx]
 
-    print("N points:", len(steps))
-    print("steps:", steps)
-    print("steps min/max:", float(np.min(steps)), float(np.max(steps)))
-    print("ee head/tail:", ee[:3], ee[-3:])
-    assert len(steps) == len(ee) and len(steps) > 3
+    if len(steps) <= 1:
+        print(f"Not enough points in: {csv_path}")
+        return 1
 
+    style_axes(args.dpi)
     plt.figure(figsize=(8, 5))
     plt.plot(steps, ee, marker="o", linewidth=2, markersize=6, label="EE (eval)")
-    plt.title("SAC Convergence (Eval EE)")
-    plt.xlabel("Training Steps")
-    plt.ylabel("System Energy Efficiency (bps/Hz/J)")
+    plt.title("EE Convergence (Eval)")
+    plt.xlabel("Training steps")
+    plt.ylabel("System EE (bps/Hz/J)")
     plt.xlim(float(np.min(steps)), float(np.max(steps)))
     ax = plt.gca()
     ax.xaxis.set_major_locator(mticker.MaxNLocator(6))
@@ -94,13 +119,13 @@ def main() -> int:
         mticker.FuncFormatter(lambda x, pos: f"{int(x / 1000)}k")
     )
     plt.grid(True, linestyle="--", alpha=0.5)
-    plt.ylim(0.0, 9.5)
-    plt.legend()
-    os.makedirs("figures", exist_ok=True)
-    out_path = os.path.join("figures", "sac_eval_convergence_clean.png")
+    plt.legend(loc="best")
+    out_path = args.out_path or os.path.join("figures", "sac_eval_convergence_clean.png")
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     plt.tight_layout()
-    plt.savefig(out_path, dpi=200)
-    plt.show()
+    plt.savefig(out_path, dpi=args.dpi)
+    if args.show:
+        plt.show()
     plt.close()
     print(f"Saved: {out_path}")
     return 0

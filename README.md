@@ -84,6 +84,18 @@ python scripts/plot_sinr_training.py --csv logs/runs/<run_id>/train_metrics.csv
 python -m scripts.plot_dynamic_ee
 ```
 
+## Generate Figures (Paper-ready)
+
+```bash
+python scripts/make_all_figures.py
+```
+
+```bash
+python scripts/make_all_figures.py --run_id <run_id>
+```
+
+Outputs: `figures/generated/`
+
 ## Energy Causality Sanity Check
 
 ```bash

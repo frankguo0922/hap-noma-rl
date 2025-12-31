@@ -1,6 +1,7 @@
 """Plot dynamic EE under WD join/leave dynamics."""
 from __future__ import annotations
 
+import argparse
 import copy
 import os
 from typing import Dict
@@ -135,10 +136,18 @@ def run_episode(
 
 
 def moving_average(values: np.ndarray, window: int) -> np.ndarray:
-    if values.size < window:
+    if window <= 1:
         return values
-    kernel = np.ones(window, dtype=np.float32) / window
-    return np.convolve(values, kernel, mode="valid")
+    if values.size == 0:
+        return values
+    cumsum = np.cumsum(values, dtype=np.float64)
+    out = np.empty(values.size, dtype=np.float64)
+    for idx in range(values.size):
+        start = max(0, idx - window + 1)
+        count = idx - start + 1
+        total = cumsum[idx] - (cumsum[start - 1] if start > 0 else 0.0)
+        out[idx] = total / count
+    return out.astype(np.float32)
 
 
 def cumulative_average(values: np.ndarray) -> np.ndarray:
@@ -147,7 +156,29 @@ def cumulative_average(values: np.ndarray) -> np.ndarray:
     return np.cumsum(values) / np.arange(1, values.size + 1)
 
 
+def style_axes(dpi: int) -> None:
+    plt.rcParams.update(
+        {
+            "font.size": 11,
+            "axes.titlesize": 12,
+            "axes.labelsize": 11,
+            "legend.fontsize": 9,
+            "xtick.labelsize": 10,
+            "ytick.labelsize": 10,
+            "figure.dpi": dpi,
+        }
+    )
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--out_path", type=str, default=None)
+    parser.add_argument("--dpi", type=int, default=300)
+    parser.add_argument("--ma_window", type=int, default=20)
+    parser.add_argument("--no_extra", action="store_true", help="Only save the main EE plot")
+    parser.add_argument("--show", action="store_true")
+    args = parser.parse_args()
+
     cfg = load_config("configs/default_paper_scale.yaml")
     base_env_cfg = build_env_config(cfg.get("env", {}))
     base_env_cfg.max_wd = 200
@@ -164,67 +195,85 @@ def main() -> int:
 
     data = run_episode(env_sac, env_baseline, model, steps=500, seed=42)
 
-    os.makedirs("figures", exist_ok=True)
+    style_axes(args.dpi)
+    out_path = args.out_path or os.path.join("figures", "dynamic_ee.png")
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
-    mean_sac = float(np.mean(data["ee_sac"])) if data["ee_sac"].size > 0 else 0.0
-    mean_sus = float(np.mean(data["ee_sus"])) if data["ee_sus"].size > 0 else 0.0
+    ee_sac_ma = moving_average(data["ee_sac"], args.ma_window)
+    ee_sus_ma = moving_average(data["ee_sus"], args.ma_window)
+    mean_sac = float(np.nanmean(ee_sac_ma)) if ee_sac_ma.size > 0 else 0.0
+    mean_sus = float(np.nanmean(ee_sus_ma)) if ee_sus_ma.size > 0 else 0.0
 
     plt.figure(figsize=(10, 4.5))
-    plt.plot(data["ee_sac"], linewidth=2, label=f"SAC (dynamic), mean={mean_sac:.3f}")
-    plt.plot(data["ee_sus"], linewidth=2, label=f"SUS baseline (Amer-25-style), mean={mean_sus:.3f}")
+    plt.plot(ee_sac_ma, linewidth=2, label=f"SAC (dynamic) MA20, mean={mean_sac:.3f}")
+    plt.plot(ee_sus_ma, linewidth=2, label=f"SUS baseline (Amer-25-style) MA20, mean={mean_sus:.3f}")
+    plt.title("Dynamic Energy Efficiency Comparison under Time-Varying User Conditions")
     plt.xlabel("Time step")
     plt.ylabel("System EE (bps/Hz/J)")
     plt.grid(True, linestyle="--", alpha=0.6)
-    plt.legend()
+    plt.legend(loc="best")
     plt.tight_layout()
-    out1 = os.path.join("figures", "dynamic_ee.png")
-    plt.savefig(out1, dpi=200)
-    plt.show()
+    plt.savefig(out_path, dpi=args.dpi)
+    if args.show:
+        plt.show()
+    plt.close()
 
-    window = 20
-    ee_sac_ma = moving_average(data["ee_sac"], window)
-    ee_sus_ma = moving_average(data["ee_sus"], window)
-    steps_ma = np.arange(ee_sac_ma.size)
-    plt.figure(figsize=(10, 4.5))
-    plt.plot(steps_ma, ee_sac_ma, linewidth=2, label=f"SAC (dynamic) MA20, mean={mean_sac:.3f}")
-    plt.plot(steps_ma, ee_sus_ma, linewidth=2, label=f"SUS baseline (Amer-25-style) MA20, mean={mean_sus:.3f}")
-    plt.xlabel("Time step")
-    plt.ylabel("System EE (bps/Hz/J)")
-    plt.grid(True, linestyle="--", alpha=0.6)
-    plt.legend()
-    plt.tight_layout()
-    out1b = os.path.join("figures", "dynamic_ee_ma20.png")
-    plt.savefig(out1b, dpi=200)
-    plt.show()
+    if not args.no_extra:
+        window = 20
+        ee_sac_ma = moving_average(data["ee_sac"], window)
+        ee_sus_ma = moving_average(data["ee_sus"], window)
+        steps_ma = np.arange(ee_sac_ma.size)
+        plt.figure(figsize=(10, 4.5))
+        plt.plot(steps_ma, ee_sac_ma, linewidth=2, label=f"SAC (dynamic) MA20, mean={mean_sac:.3f}")
+        plt.plot(
+            steps_ma,
+            ee_sus_ma,
+            linewidth=2,
+            label=f"SUS baseline (Amer-25-style) MA20, mean={mean_sus:.3f}",
+        )
+        plt.xlabel("Time step")
+        plt.ylabel("System EE (bps/Hz/J)")
+        plt.grid(True, linestyle="--", alpha=0.6)
+        plt.legend(loc="best")
+        plt.tight_layout()
+        out1b = os.path.join(os.path.dirname(out_path) or ".", "dynamic_ee_ma20.png")
+        plt.savefig(out1b, dpi=args.dpi)
+        if args.show:
+            plt.show()
+        plt.close()
 
-    ee_sac_cum = cumulative_average(data["ee_sac"])
-    ee_sus_cum = cumulative_average(data["ee_sus"])
-    plt.figure(figsize=(10, 4.5))
-    plt.plot(ee_sac_cum, linewidth=2, label=f"SAC (dynamic) CUM, mean={mean_sac:.3f}")
-    plt.plot(ee_sus_cum, linewidth=2, label=f"SUS baseline (Amer-25-style) CUM, mean={mean_sus:.3f}")
-    plt.xlabel("Time step")
-    plt.ylabel("System EE (bps/Hz/J)")
-    plt.grid(True, linestyle="--", alpha=0.6)
-    plt.legend()
-    plt.tight_layout()
-    out1c = os.path.join("figures", "dynamic_ee_cumavg.png")
-    plt.savefig(out1c, dpi=200)
-    plt.show()
+        ee_sac_cum = cumulative_average(data["ee_sac"])
+        ee_sus_cum = cumulative_average(data["ee_sus"])
+        plt.figure(figsize=(10, 4.5))
+        plt.plot(ee_sac_cum, linewidth=2, label=f"SAC (dynamic) CUM, mean={mean_sac:.3f}")
+        plt.plot(ee_sus_cum, linewidth=2, label=f"SUS baseline (Amer-25-style) CUM, mean={mean_sus:.3f}")
+        plt.xlabel("Time step")
+        plt.ylabel("System EE (bps/Hz/J)")
+        plt.grid(True, linestyle="--", alpha=0.6)
+        plt.legend(loc="best")
+        plt.tight_layout()
+        out1c = os.path.join(os.path.dirname(out_path) or ".", "dynamic_ee_cumavg.png")
+        plt.savefig(out1c, dpi=args.dpi)
+        if args.show:
+            plt.show()
+        plt.close()
 
-    plt.figure(figsize=(10, 4.5))
-    plt.plot(data["wd_counts"], linewidth=2)
-    plt.xlabel("Time step")
-    plt.ylabel("Number of WDs")
-    plt.grid(True, linestyle="--", alpha=0.6)
-    plt.tight_layout()
-    out2 = os.path.join("figures", "dynamic_wd_over_time.png")
-    plt.savefig(out2, dpi=200)
-    plt.show()
+        plt.figure(figsize=(10, 4.5))
+        plt.plot(data["wd_counts"], linewidth=2)
+        plt.xlabel("Time step")
+        plt.ylabel("Number of WDs")
+        plt.grid(True, linestyle="--", alpha=0.6)
+        plt.tight_layout()
+        out2 = os.path.join(os.path.dirname(out_path) or ".", "dynamic_wd_over_time.png")
+        plt.savefig(out2, dpi=args.dpi)
+        if args.show:
+            plt.show()
+        plt.close()
+        print(f"Saved: {out1b}")
+        print(f"Saved: {out1c}")
+        print(f"Saved: {out2}")
 
-    print(f"Saved: {out1}")
-    print(f"Saved: {out1b}")
-    print(f"Saved: {out1c}")
-    print(f"Saved: {out2}")
+    print(f"Saved: {out_path}")
     return 0
 
 
