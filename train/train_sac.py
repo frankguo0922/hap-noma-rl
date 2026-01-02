@@ -353,6 +353,7 @@ def main():
     parser.add_argument("--config", type=str, default="configs/default.yaml")
     parser.add_argument("--total-timesteps", type=int, default=None)
     parser.add_argument("--n-envs", type=int, default=None)
+    parser.add_argument("--ent-coef", type=str, default=None)
     args = parser.parse_args()
 
     if args.config:
@@ -382,6 +383,13 @@ def main():
 
     vec_env = make_vec_env(lambda: HapWpcnNomaEnv(config=env_cfg, seed=seed), n_envs=n_envs)
 
+    ent_coef = train_cfg.get("ent_coef", "auto")
+    if args.ent_coef is not None:
+        if args.ent_coef.lower().startswith("auto"):
+            ent_coef = args.ent_coef
+        else:
+            ent_coef = float(args.ent_coef)
+
     model = SAC(
         "MlpPolicy",
         vec_env,
@@ -392,7 +400,7 @@ def main():
         train_freq=int(train_cfg.get("train_freq", 1)),
         gradient_steps=int(train_cfg.get("gradient_steps", 1)),
         tau=float(train_cfg.get("sac_tau", 0.005)),
-        ent_coef=train_cfg.get("ent_coef", "auto"),
+        ent_coef=ent_coef,
         learning_starts=int(train_cfg.get("learning_starts", 1000)),
         verbose=0,
         seed=seed,
