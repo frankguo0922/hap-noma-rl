@@ -81,6 +81,42 @@ def load_avg_reward(metrics_path: str) -> Optional[float]:
         return None
 
 
+def load_sac_diagnostics(diag_path: str) -> dict:
+    if not os.path.exists(diag_path):
+        return {}
+    with open(diag_path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = [row for row in reader if row]
+    if not rows:
+        return {}
+    ent_vals = []
+    ent_coef_final = None
+    has_twin_critics = None
+    for row in rows:
+        if "policy_entropy" in row and row["policy_entropy"] != "":
+            try:
+                ent_vals.append(float(row["policy_entropy"]))
+            except ValueError:
+                pass
+        if "ent_coef" in row and row["ent_coef"] != "":
+            ent_coef_final = row["ent_coef"]
+        if "has_twin_critics" in row and row["has_twin_critics"] != "":
+            has_twin_critics = row["has_twin_critics"]
+    avg_entropy = float(np.mean(ent_vals)) if ent_vals else None
+    if ent_coef_final is not None:
+        try:
+            ent_coef_final = float(ent_coef_final)
+        except ValueError:
+            pass
+    if has_twin_critics is not None:
+        has_twin_critics = str(has_twin_critics).lower() in ("true", "1")
+    return {
+        "ent_coef_final": ent_coef_final,
+        "avg_policy_entropy": avg_entropy,
+        "has_twin_critics": has_twin_critics,
+    }
+
+
 def plot_eval(steps: np.ndarray, ee: np.ndarray, out_path: str, title: str) -> None:
     plt.rcParams.update(
         {
@@ -141,6 +177,12 @@ def main() -> int:
 
     avg_reward = load_avg_reward(os.path.join(run_dir, "train_metrics.csv"))
 
+    run_meta_path = os.path.join(run_dir, "run_meta.json")
+    run_meta = {}
+    if os.path.exists(run_meta_path):
+        with open(run_meta_path, "r", encoding="utf-8") as f:
+            run_meta = json.load(f)
+
     summary = {
         "run_dir": os.path.abspath(run_dir),
         "final_step": final_step,
@@ -154,6 +196,17 @@ def main() -> int:
         "plot_raw": os.path.abspath(raw_path),
         "plot_20ma": os.path.abspath(ma_path),
     }
+    sac_diag_path = os.path.join(run_dir, "sac_diagnostics.csv")
+    rl_trace_path = os.path.join(run_dir, "rl_trace.csv")
+    if os.path.exists(sac_diag_path):
+        summary["sac_diagnostics_csv"] = os.path.abspath(sac_diag_path)
+    if os.path.exists(rl_trace_path):
+        summary["rl_trace_csv"] = os.path.abspath(rl_trace_path)
+    if run_meta:
+        summary.update(run_meta)
+    diag_summary = load_sac_diagnostics(os.path.join(run_dir, "sac_diagnostics.csv"))
+    if diag_summary:
+        summary.update(diag_summary)
 
     summary_path = os.path.join(run_dir, "summary.json")
     with open(summary_path, "w", encoding="utf-8") as f:

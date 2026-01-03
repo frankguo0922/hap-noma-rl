@@ -6,6 +6,7 @@ import csv
 import hashlib
 import json
 import os
+import sys
 from datetime import datetime
 from collections import deque
 from typing import Dict, List
@@ -26,6 +27,10 @@ class MetricsCallback(BaseCallback):
         eval_freq: int,
         log_path: str,
         metrics_path: str,
+        sac_diag_path: str,
+        rl_trace_path: str,
+        ent_coef_setting: str | float,
+        entropy_enabled: bool,
         best_model_path: str,
         eval_env: HapWpcnNomaEnv,
         n_eval_episodes: int,
@@ -35,11 +40,17 @@ class MetricsCallback(BaseCallback):
         self.eval_freq = eval_freq
         self.log_path = log_path
         self.metrics_path = metrics_path
+        self.sac_diag_path = sac_diag_path
+        self.rl_trace_path = rl_trace_path
+        self.ent_coef_setting = ent_coef_setting
+        self.entropy_enabled = entropy_enabled
         self.best_model_path = best_model_path
         self.eval_env = eval_env
         self.n_eval_episodes = n_eval_episodes
         self._last_log_step = 0
         self._metrics_header_written = False
+        self._sac_header_written = False
+        self._trace_header_written = False
         self._best_eval = -np.inf
         self.rewards = deque(maxlen=log_interval)
         self.ee = deque(maxlen=log_interval)
@@ -72,10 +83,15 @@ class MetricsCallback(BaseCallback):
         self._initial_eval_done = False
         self._milestones_hit = set()
         self._milestones = [240000, 300000, 400000, 500000]
+        self._last_transition = None
 
     def _on_step(self) -> bool:
         infos: List[Dict] = self.locals.get("infos", [])
         rewards = self.locals.get("rewards", None)
+        actions = self.locals.get("actions", None)
+        new_obs = self.locals.get("new_obs", None)
+        obs = self.locals.get("obs", None)
+        dones = self.locals.get("dones", None)
         if rewards is not None:
             self.rewards.extend(rewards.tolist())
         for info in infos:
@@ -178,21 +194,6 @@ class MetricsCallback(BaseCallback):
             avg_r2 = float(np.mean(self.r2)) if self.r2 else 0.0
             avg_k = float(np.mean(self.k_val)) if self.k_val else 0.0
             avg_m = float(np.mean(self.m_val)) if self.m_val else 0.0
-            print(
-                f"step={self.num_timesteps} avg_reward={avg_reward:.4f} avg_reward_raw={avg_reward_raw:.4f} "
-                f"avg_reward_norm={avg_reward_norm:.4f} "
-                f"avg_ee_sum={avg_ee_sum:.4f} avg_ee_avg={avg_ee_avg:.4f} "
-                f"avg_sum_se={avg_se:.4f} avg_n_tx_users={avg_n_tx:.2f} avg_total_power={avg_total_power:.4f} "
-                f"avg_power_wet={avg_power_wet:.4f} avg_power_ul={avg_power_ul:.4f} avg_power_c={avg_power_c:.4f} "
-                f"avg_ee={avg_ee:.4f} avg_tau0={avg_tau0:.4f} "
-                f"avg_tau0_selected={avg_tau0_sel:.4f} avg_r1={avg_r1:.4f} avg_r2={avg_r2:.4f} "
-                f"avg_K={avg_k:.1f} avg_M={avg_m:.1f} "
-                f"avg_sinr_mean_tx={avg_sinr:.4f} avg_sinr_db_mean_tx={avg_sinr_db:.4f} "
-                f"sinr_db_p50={sinr_db_p50:.2f} sinr_db_p90={sinr_db_p90:.2f} avg_log2_mean_tx={avg_log2:.4f} "
-                f"avg_se_per_tx_user={avg_se_per_tx:.4f} avg_p_tx_mean={avg_p_tx:.4f} "
-                f"avg_h_gain_mean={avg_h_gain:.4e} avg_noise_power={avg_noise:.4e} "
-                f"avg_rx_signal_power_mean={avg_rx_signal:.4e} avg_interference_mean={avg_interf:.4e}"
-            )
             self._append_metrics(
                 step=self.num_timesteps,
                 avg_reward_raw=avg_reward_raw,
@@ -218,6 +219,28 @@ class MetricsCallback(BaseCallback):
             )
             self.sinr_db_vals = []
         self._maybe_append_ee()
+        if (
+            rewards is not None
+            and actions is not None
+            and infos
+            and (new_obs is not None or obs is not None)
+        ):
+            state = new_obs if new_obs is not None else obs
+            idx = 0
+            info = infos[idx] if len(infos) > idx else {}
+            reward = float(rewards[idx]) if hasattr(rewards, "__len__") else float(rewards)
+            done = bool(dones[idx]) if dones is not None and hasattr(dones, "__len__") else False
+            self._last_transition = {
+                "step": int(self.num_timesteps),
+                "state": state[idx] if hasattr(state, "__len__") else state,
+                "action": actions[idx] if hasattr(actions, "__len__") else actions,
+                "reward": reward,
+                "done": done,
+                "ee": float(info.get("ee", 0.0)),
+                "tau0": float(info.get("tau0", 0.0)),
+                "sum_se": float(info.get("sum_se", 0.0)),
+                "total_power": float(info.get("total_power", 0.0)),
+            }
         return True
 
     def _append_metrics(
@@ -336,6 +359,104 @@ class MetricsCallback(BaseCallback):
             f"eval_ee_sum_std={eval_std:.4f}"
         )
         self._last_log_step = self.num_timesteps
+        self._append_sac_diagnostics()
+        self._append_rl_trace()
+
+    def _get_logger_value(self, keys: List[str]) -> float | None:
+        logger = getattr(self.model, "logger", None)
+        if logger is None:
+            return None
+        values = getattr(logger, "name_to_value", {})
+        for key in keys:
+            if key in values:
+                try:
+                    return float(values[key])
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    def _append_sac_diagnostics(self) -> None:
+        os.makedirs(os.path.dirname(self.sac_diag_path), exist_ok=True)
+        file_exists = os.path.exists(self.sac_diag_path)
+        ent_coef_val = self._get_logger_value(["train/ent_coef"])
+        policy_entropy = self._get_logger_value(["train/entropy", "train/policy_entropy"])
+        actor_loss = self._get_logger_value(["train/actor_loss"])
+        critic_loss = self._get_logger_value(["train/critic_loss"])
+        ent_coef_out = ent_coef_val if ent_coef_val is not None else self.ent_coef_setting
+        with open(self.sac_diag_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if not self._sac_header_written and not file_exists:
+                writer.writerow(
+                    [
+                        "step",
+                        "ent_coef",
+                        "entropy_enabled",
+                        "policy_entropy",
+                        "actor_loss",
+                        "critic_loss",
+                        "has_twin_critics",
+                    ]
+                )
+                self._sac_header_written = True
+            writer.writerow(
+                [
+                    int(self.num_timesteps),
+                    ent_coef_out,
+                    self.entropy_enabled,
+                    policy_entropy if policy_entropy is not None else "",
+                    actor_loss if actor_loss is not None else "",
+                    critic_loss if critic_loss is not None else "",
+                    True,
+                ]
+            )
+
+    def _serialize_array(self, value) -> str:
+        if isinstance(value, np.ndarray):
+            payload = value.tolist()
+        else:
+            payload = value
+        return json.dumps(payload, ensure_ascii=True)
+
+    def _append_rl_trace(self) -> None:
+        if self._last_transition is None:
+            return
+        os.makedirs(os.path.dirname(self.rl_trace_path), exist_ok=True)
+        file_exists = os.path.exists(self.rl_trace_path)
+        row = self._last_transition
+        print(
+            f"trace step={row['step']} state={self._serialize_array(row['state'])} "
+            f"action={self._serialize_array(row['action'])} reward={row['reward']}"
+        )
+        with open(self.rl_trace_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if not self._trace_header_written and not file_exists:
+                writer.writerow(
+                    [
+                        "step",
+                        "state",
+                        "action",
+                        "reward",
+                        "done",
+                        "ee",
+                        "tau0",
+                        "sum_se",
+                        "total_power",
+                    ]
+                )
+                self._trace_header_written = True
+            writer.writerow(
+                [
+                    row["step"],
+                    self._serialize_array(row["state"]),
+                    self._serialize_array(row["action"]),
+                    row["reward"],
+                    row["done"],
+                    row["ee"],
+                    row["tau0"],
+                    row["sum_se"],
+                    row["total_power"],
+                ]
+            )
 
 
 def load_config(path: str) -> Dict:
@@ -354,6 +475,7 @@ def main():
     parser.add_argument("--total-timesteps", type=int, default=None)
     parser.add_argument("--n-envs", type=int, default=None)
     parser.add_argument("--ent-coef", type=str, default=None)
+    parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
 
     if args.config:
@@ -377,18 +499,25 @@ def main():
 
     total_timesteps = args.total_timesteps or int(train_cfg.get("total_timesteps", 300000))
     n_envs = args.n_envs or int(train_cfg.get("n_envs", 32))
-    seed = int(cfg.get("seed", 42))
+    seed = int(args.seed) if args.seed is not None else int(cfg.get("seed", 42))
     env_cfg.total_timesteps = int(total_timesteps)
     print(f"TOTAL_TIMESTEPS={total_timesteps}")
 
     vec_env = make_vec_env(lambda: HapWpcnNomaEnv(config=env_cfg, seed=seed), n_envs=n_envs)
 
-    ent_coef = train_cfg.get("ent_coef", "auto")
-    if args.ent_coef is not None:
+    if args.ent_coef is None:
+        ent_coef = "auto"
+        entropy_enabled = True
+        run_type = "sac_auto"
+    else:
         if args.ent_coef.lower().startswith("auto"):
             ent_coef = args.ent_coef
+            entropy_enabled = True
+            run_type = "sac_auto"
         else:
             ent_coef = float(args.ent_coef)
+            entropy_enabled = ent_coef != 0.0
+            run_type = "no_entropy" if ent_coef == 0.0 else "sac_fixed"
 
     model = SAC(
         "MlpPolicy",
@@ -413,7 +542,10 @@ def main():
     run_dir = os.path.join("logs", "runs", run_id)
     log_path = os.path.join(run_dir, "ee_vs_steps.csv")
     metrics_path = os.path.join(run_dir, "train_metrics.csv")
+    sac_diag_path = os.path.join(run_dir, "sac_diagnostics.csv")
+    rl_trace_path = os.path.join(run_dir, "rl_trace.csv")
     best_model_path = os.path.join(run_dir, "best_model")
+    run_meta_path = os.path.join(run_dir, "run_meta.json")
     print(f"TOTAL_TIMESTEPS={total_timesteps}, EVAL_FREQ={eval_freq}")
     print(f"Logging to: {log_path}")
     eval_env = HapWpcnNomaEnv(config=env_cfg, seed=seed + 999)
@@ -423,10 +555,27 @@ def main():
         eval_freq=eval_freq,
         log_path=log_path,
         metrics_path=metrics_path,
+        sac_diag_path=sac_diag_path,
+        rl_trace_path=rl_trace_path,
+        ent_coef_setting=ent_coef,
+        entropy_enabled=entropy_enabled,
         best_model_path=best_model_path,
         eval_env=eval_env,
         n_eval_episodes=n_eval_episodes,
     )
+
+    os.makedirs(run_dir, exist_ok=True)
+    run_meta = {
+        "algo": "SAC",
+        "ent_coef": ent_coef,
+        "entropy_enabled": entropy_enabled,
+        "run_type": run_type,
+        "seed": seed,
+        "command": " ".join([sys.executable, "-m", "train.train_sac", *sys.argv[1:]]),
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+    with open(run_meta_path, "w", encoding="utf-8") as f:
+        json.dump(run_meta, f, indent=2, ensure_ascii=True)
 
     model.learn(total_timesteps=total_timesteps, callback=callback)
 

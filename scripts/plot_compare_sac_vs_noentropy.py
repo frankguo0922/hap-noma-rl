@@ -8,6 +8,7 @@ from typing import Tuple
 
 import numpy as np
 import matplotlib.pyplot as plt
+import json
 
 
 def moving_average(values: np.ndarray, window: int) -> np.ndarray:
@@ -62,6 +63,25 @@ def main() -> int:
     parser.add_argument("--dpi", type=int, default=300)
     args = parser.parse_args()
 
+    sac_summary_path = os.path.join(args.sac_run_dir, "summary.json")
+    noent_summary_path = os.path.join(args.noentropy_run_dir, "summary.json")
+    if not os.path.exists(sac_summary_path) or not os.path.exists(noent_summary_path):
+        print("summary.json not found in one or both run directories.")
+        print("Run the exporter to generate summary.json before comparing.")
+        return 1
+    with open(sac_summary_path, "r", encoding="utf-8") as f:
+        sac_summary = json.load(f)
+    with open(noent_summary_path, "r", encoding="utf-8") as f:
+        noent_summary = json.load(f)
+    sac_type = sac_summary.get("run_type")
+    noent_type = noent_summary.get("run_type")
+    if {sac_type, noent_type} != {"sac_auto", "no_entropy"}:
+        print(
+            "Run type mismatch. Expected one sac_auto and one no_entropy. "
+            f"Got sac_run={sac_type}, noentropy_run={noent_type}."
+        )
+        return 1
+
     sac_csv = os.path.join(args.sac_run_dir, "ee_vs_steps.csv")
     noent_csv = os.path.join(args.noentropy_run_dir, "ee_vs_steps.csv")
     if not os.path.exists(sac_csv):
@@ -82,6 +102,14 @@ def main() -> int:
     base_ma = moving_average(base_ee, args.ma_window)
     sac_steps_ma = sac_steps[-len(sac_ma) :] if sac_ma.size > 0 else sac_steps
     base_steps_ma = base_steps[-len(base_ma) :] if base_ma.size > 0 else base_steps
+    if sac_steps_ma.size > 0 and base_steps_ma.size > 0:
+        max_step = min(float(sac_steps_ma[-1]), float(base_steps_ma[-1]))
+        sac_mask = sac_steps_ma <= max_step
+        base_mask = base_steps_ma <= max_step
+        sac_steps_ma = sac_steps_ma[sac_mask]
+        sac_ma = sac_ma[sac_mask]
+        base_steps_ma = base_steps_ma[base_mask]
+        base_ma = base_ma[base_mask]
 
     mean_sac = float(np.nanmean(sac_ma)) if sac_ma.size > 0 else 0.0
     mean_base = float(np.nanmean(base_ma)) if base_ma.size > 0 else 0.0
@@ -92,15 +120,15 @@ def main() -> int:
         sac_steps_ma,
         sac_ma,
         linewidth=2,
-        label=f"SAC (auto entropy), mean={mean_sac:.2f}",
+        label=f"SAC (entropy-enabled), mean={mean_sac:.2f}",
     )
     plt.plot(
         base_steps_ma,
         base_ma,
         linewidth=2,
-        label=f"No-entropy baseline (alpha=0), mean={mean_base:.2f}",
+        label=f"RL without entropy (ablation), mean={mean_base:.2f}",
     )
-    plt.title("EE Convergence Comparison: SAC vs No-Entropy RL Baseline")
+    plt.title("EE Convergence Comparison: SAC vs No-Entropy RL")
     plt.xlabel("Training steps")
     plt.ylabel("System EE (bps/Hz/J)")
     plt.grid(True, linestyle="--", alpha=0.6)
